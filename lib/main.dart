@@ -1,8 +1,18 @@
-import 'package:english_words/english_words.dart';
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+import 'add_product_screen.dart'; // Import the new screen
+import 'edit_product_screen.dart'; // Import the edit screen
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 
-void main() {
+
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await dotenv.load(fileName: ".env");
+  print("hola mundo");
+  await Supabase.initialize(
+    url: dotenv.env['SUPABASE_URL']!,
+    anonKey: dotenv.env['SUPABASE_ANON_KEY']!,
+  );
   runApp(MyApp());
 }
 
@@ -11,9 +21,7 @@ class MyApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ChangeNotifierProvider(
-      create: (context) => MyAppState(),
-      child: MaterialApp(
+    return MaterialApp(
         title: 'Inventory',
         debugShowCheckedModeBanner: false,
         theme: ThemeData(
@@ -22,26 +30,76 @@ class MyApp extends StatelessWidget {
           ),
         ),
         home: MyHomePage(),
-      ),
-    );
+      );
+  
   }
 }
 
-class MyAppState extends ChangeNotifier {
-  var current = WordPair.random();
-  // ↓ Add this.
-  void getNext() {
-    current = WordPair.random();
-    notifyListeners();
-  }
+class MyHomePage extends StatefulWidget {
+  const MyHomePage({super.key});
+  @override
+  State<MyHomePage> createState() => _MyHomePageState();
 }
 
-class MyHomePage extends StatelessWidget {
+class _MyHomePageState extends State<MyHomePage> {
+  late Future<List<dynamic>> _future;
+  List<dynamic> _allProducts = [];
+  List<dynamic> _filteredProducts = [];
+  TextEditingController _searchController = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    _refreshData(); // Fetch initial data
+    _future = _fetchProducts();
+    _searchController.addListener(_onSearchChanged);
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  void _onSearchChanged() {
+    filterSearchResults(_searchController.text);
+  }
+
+  Future<List<dynamic>> _fetchProducts() async {
+    final response = await Supabase.instance.client
+        .from('producto')
+        .select()
+        .order('name', ascending: true);
+
+    _allProducts = List<dynamic>.from(response);
+    _filteredProducts = _allProducts; // Initially, show all products
+    return _allProducts;
+  }
+  Future<void> _refreshData() async {
+    setState(() {
+      _future = _fetchProducts(); // Refresh the data
+    });
+  }
+
+  void filterSearchResults(String query) {
+    List<dynamic> results = [];
+    print("query:"+ query);
+    if (query.isNotEmpty) {
+      results = _allProducts
+          .where((product) => product['name']
+              .toLowerCase()
+              .contains(query.toLowerCase()))
+          .toList();
+    } else {
+      results = _allProducts;
+    }
+    setState(() {
+      _filteredProducts = results;
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
-    var appState = context.watch<MyAppState>();
-    var pair = appState.current; 
-
     return Scaffold(
           appBar: AppBar(
             title: Text('Tienda'),
@@ -58,12 +116,6 @@ class MyHomePage extends StatelessWidget {
                 );
               },
             ),
-            actions: [
-              IconButton(
-                icon: Icon(Icons.search),
-                onPressed: () => null,
-              ),
-            ],
           ),
           drawer: Drawer(
             child: ListView(
@@ -88,10 +140,17 @@ class MyHomePage extends StatelessWidget {
                 ),
                 ListTile(
                   leading: Icon(Icons.settings),
-                  title: Text('Precios'),
+                  title: Text('Agregar Precios'),
                   onTap: () {
                     // Handle the onTap here
                     Navigator.pop(context); // Close the drawer
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => AddProductScreen(
+                          onProductAdded: _refreshData,
+                        )),
+                    ); // Navigate to the form screen
                   },
                 ),
                 ListTile(
@@ -106,52 +165,79 @@ class MyHomePage extends StatelessWidget {
             ),
           ),
           
-          body: Center(
-            child: Column(
-              // mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Text('An EXTRAORDINARY random good idea:'),
-                BigCard(pair: pair), 
-            
-                // ↓ Add this.
-                ElevatedButton(
-                  onPressed: () {
-                    appState.getNext();
-                  },
-                  child: Text('Next'),
+          body: CustomScrollView(
+            slivers: [
+              SliverToBoxAdapter(
+                child: Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(16.0), // Adjust the padding
+                    child: TextField(
+                      controller: _searchController,
+                      decoration: InputDecoration(
+                        labelText: "Busca el producto",
+                        hintText: "Buscar...",
+                        prefixIcon: Icon(Icons.search),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.all(Radius.circular(25.0)),
+                        ),
+                      ),
+                    ),
+                  ),
                 ),
-              ],
-            ),
+              ),
+              FutureBuilder(
+                future: _future,
+                builder: (context, snapshot) {
+                  if (!snapshot.hasData) {
+                    return const SliverFillRemaining(
+                      child: Center(child: CircularProgressIndicator()),
+                    );
+                  }
+                  // final product = snapshot.data!;
+                  return SliverList(
+                    delegate: SliverChildBuilderDelegate(
+                      (context, index) {
+                        final item = _filteredProducts[index];
+                        return Column(
+                          children: [
+                            ListTile(
+                              title: Row(
+                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                children: [
+                                  Text(item['name']),
+                                  GestureDetector(
+                                    onTap: () {
+                                      Navigator.push(
+                                        context,
+                                        MaterialPageRoute(
+                                          builder: (context) => EditProductScreen(
+                                            productId: item['id'].toString(),
+                                            currentName: item['name'],
+                                            currentPrice: (item['price'] as num).toDouble(),
+                                            onProductUpdated: _refreshData,
+                                          ),
+                                        ),
+                                      );
+                                    },
+                                    child: Text(
+                                      'S/ ${item['price']}',
+                                      style: TextStyle(color: Colors.blue), // Highlight clickable text
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            Divider(), // Add a divider below each ListTile
+                          ],
+                        );
+                      },
+                      childCount: _filteredProducts.length,
+                    ),
+                  );
+                },
+              ),
+            ],
           ),
         );
-      
-    
-  }
-}
-
-class BigCard extends StatelessWidget {
-  const BigCard({
-    super.key,
-    required this.pair,
-  });
-
-  final WordPair pair;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context); 
-    // ↓ Add this.
-    final style = theme.textTheme.displayMedium!.copyWith(
-      color: theme.colorScheme.onPrimary,
-    );
-    return Card(
-      color: theme.colorScheme.primary,
-      child: Padding(
-        padding: const EdgeInsets.all(20),
-        child: Text(pair.asLowerCase, 
-                    style: style,
-                    semanticsLabel: "${pair.first} ${pair.second}"),
-      ),
-    );
   }
 }
